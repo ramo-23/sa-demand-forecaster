@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+prophet
+statsmodels
+mapie
+holidays
+requests
+fastapi[standard]
+uvicorn
+pytest
+matplotlib
