@@ -8,6 +8,8 @@ def rolling_origin_splits(
     initial_train_hours: int,
     horizon_hours: int,
     step_hours: int,
+    include_partial_test: bool = False,
+    feature_horizon: int = 24,
 ) -> Iterator[tuple[pd.DatetimeIndex, pd.DatetimeIndex]]:
     """Yield expanding chronological train/test index labels for hourly data.
 
@@ -23,6 +25,7 @@ def rolling_origin_splits(
         ("initial_train_hours", initial_train_hours),
         ("horizon_hours", horizon_hours),
         ("step_hours", step_hours),
+        ("feature_horizon", feature_horizon),
     ):
         if not isinstance(value, int) or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
@@ -31,8 +34,22 @@ def rolling_origin_splits(
         if not (differences == pd.Timedelta(hours=1)).all():
             raise ValueError("index must have consecutive hourly timestamps")
 
+    minimum_train_hours = 336 + (feature_horizon - 24) + 168
+    if initial_train_hours <= minimum_train_hours:
+        raise ValueError(
+            "initial_train_hours must exceed "
+            f"{minimum_train_hours} to provide finite lag and rolling features"
+        )
+
+    if not isinstance(include_partial_test, bool):
+        raise ValueError("include_partial_test must be a boolean")
+
     train_end = initial_train_hours
-    while train_end + horizon_hours <= len(index):
-        test_end = train_end + horizon_hours
+    while train_end < len(index):
+        test_end = min(train_end + horizon_hours, len(index))
+        if test_end - train_end < horizon_hours and not include_partial_test:
+            break
         yield index[:train_end], index[train_end:test_end]
+        if test_end == len(index):
+            break
         train_end += step_hours

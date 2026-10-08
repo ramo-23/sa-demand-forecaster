@@ -41,7 +41,8 @@ def _fetch_city_year(
     city: str,
     lat: float,
     lon: float,
-    year: int,
+    start_date: date,
+    end_date: date,
     session: requests.Session,
 ) -> pd.DataFrame:
     response = session.get(
@@ -49,16 +50,17 @@ def _fetch_city_year(
         params={
             "latitude": lat,
             "longitude": lon,
-            "start_date": f"{year}-01-01",
-            "end_date": f"{year}-12-31",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
             "hourly": "temperature_2m",
             "timezone": TIMEZONE,
         },
     )
     if response.status_code != 200:
         raise requests.HTTPError(
-            f"Open-Meteo request failed for {city} in {year}: "
-            f"HTTP {response.status_code}",
+            f"Open-Meteo request failed for {city} from {start_date} "
+            f"through {end_date}: HTTP {response.status_code}. "
+            f"Response body: {response.text}",
             response=response,
         )
 
@@ -69,14 +71,14 @@ def _fetch_city_year(
         temperatures = hourly["temperature_2m"]
     except (KeyError, TypeError) as error:
         raise ValueError(
-            f"Open-Meteo response for {city} in {year} is missing hourly "
-            "time or temperature_2m data"
+            f"Open-Meteo response for {city} from {start_date} through "
+            f"{end_date} is missing hourly time or temperature_2m data"
         ) from error
 
     if len(times) != len(temperatures):
         raise ValueError(
             f"Open-Meteo returned mismatched timestamps and temperatures "
-            f"for {city} in {year}"
+            f"for {city} from {start_date} through {end_date}"
         )
 
     index = pd.DatetimeIndex(pd.to_datetime(times, errors="raise"))
@@ -89,13 +91,15 @@ def _fetch_city_year(
     values = pd.to_numeric(pd.Series(temperatures), errors="raise")
     frame = pd.DataFrame({CITY_COLUMNS[city]: values.to_numpy()}, index=index)
     if frame.index.has_duplicates:
-        raise ValueError(f"Open-Meteo returned duplicate timestamps for {city} in {year}")
+        raise ValueError(
+            f"Open-Meteo returned duplicate timestamps for {city} "
+            f"from {start_date} through {end_date}"
+        )
     if not frame.index.is_monotonic_increasing:
         raise ValueError(
-            f"Open-Meteo returned non-monotonic timestamps for {city} in {year}"
+            f"Open-Meteo returned non-monotonic timestamps for {city} "
+            f"from {start_date} through {end_date}"
         )
-    if frame[CITY_COLUMNS[city]].isna().any():
-        raise ValueError(f"Open-Meteo returned missing temperatures for {city} in {year}")
     return frame
 
 
@@ -136,7 +140,12 @@ def fetch_weather(
             column = CITY_COLUMNS[city]
             yearly_frames = []
             for year in range(start.year, end.year + 1):
-                yearly_cache = cache_path / f"open_meteo_{city}_{year}.csv"
+                chunk_start = max(start, date(year, 1, 1))
+                chunk_end = min(end, date(year, 12, 31))
+                yearly_cache = cache_path / (
+                    f"open_meteo_{city}_{chunk_start.isoformat()}_"
+                    f"{chunk_end.isoformat()}.csv"
+                )
                 if yearly_cache.exists() and not force_refresh:
                     cached = pd.read_csv(yearly_cache, index_col="timestamp")
                     if column not in cached.columns:
@@ -157,7 +166,12 @@ def fetch_weather(
                     yearly = cached[[column]]
                 else:
                     yearly = _fetch_city_year(
-                        city, latitude, longitude, year, client
+                        city,
+                        latitude,
+                        longitude,
+                        chunk_start,
+                        chunk_end,
+                        client,
                     )
                     yearly.to_csv(yearly_cache, index_label="timestamp")
                 yearly_frames.append(yearly)
@@ -169,11 +183,13 @@ def fetch_weather(
             [city_frames[city] for city in CITY_COLUMNS],
             axis=1,
         )
-        if result.isna().any().any():
-            missing = result.columns[result.isna().any()].tolist()
+        temperature_columns = list(CITY_COLUMNS.values())
+        missing_rows = result[temperature_columns].isna().any(axis=1)
+        if missing_rows.any():
+            missing_timestamps = result.index[missing_rows]
             raise ValueError(
-                f"Weather data is incomplete for the requested hourly range; "
-                f"missing values in: {', '.join(missing)}"
+                "Weather data has missing temperatures at requested timestamps "
+                f"from {missing_timestamps[0]} through {missing_timestamps[-1]}"
             )
 
         result["temp_weighted"] = sum(

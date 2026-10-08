@@ -7,7 +7,7 @@ from src.evaluate.backtest import rolling_origin_splits
 def test_rolling_origin_splits_are_expanding_ordered_and_disjoint() -> None:
     index = pd.date_range(
         "2024-01-01",
-        periods=20,
+        periods=600,
         freq="h",
         tz="Africa/Johannesburg",
     )
@@ -15,9 +15,9 @@ def test_rolling_origin_splits_are_expanding_ordered_and_disjoint() -> None:
     splits = list(
         rolling_origin_splits(
             index,
-            initial_train_hours=8,
-            horizon_hours=4,
-            step_hours=4,
+            initial_train_hours=505,
+            horizon_hours=24,
+            step_hours=24,
         )
     )
 
@@ -45,3 +45,44 @@ def test_rolling_origin_requires_regular_hourly_index() -> None:
 
     with pytest.raises(ValueError, match="consecutive hourly"):
         list(rolling_origin_splits(index, 1, 1, 1))
+
+
+def test_rolling_origin_rejects_insufficient_initial_training_hours() -> None:
+    index = pd.date_range(
+        "2024-01-01",
+        periods=600,
+        freq="h",
+        tz="Africa/Johannesburg",
+    )
+
+    with pytest.raises(ValueError, match="must exceed 504"):
+        list(
+            rolling_origin_splits(
+                index,
+                initial_train_hours=504,
+                horizon_hours=24,
+                step_hours=24,
+            )
+        )
+
+
+def test_rolling_origin_can_include_final_partial_test_window() -> None:
+    index = pd.date_range(
+        "2024-01-01",
+        periods=530,
+        freq="h",
+        tz="Africa/Johannesburg",
+    )
+
+    splits = list(
+        rolling_origin_splits(
+            index,
+            initial_train_hours=505,
+            horizon_hours=24,
+            step_hours=24,
+            include_partial_test=True,
+        )
+    )
+
+    assert [len(test_idx) for _, test_idx in splits] == [24, 1]
+    assert splits[-1][1][-1] == index[-1]

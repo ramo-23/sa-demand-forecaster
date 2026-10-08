@@ -20,12 +20,18 @@ class FakeSession(requests.Session):
         if not isinstance(params, dict):
             raise AssertionError("Expected Open-Meteo request parameters")
         self.calls.append((url, params))
-        year = int(params["start_date"][:4])
-        start = date(year, 1, 1)
-        end = date(year + 1, 1, 1)
-        times = pd.date_range(start, end, freq="h", inclusive="left")
+        start = date.fromisoformat(params["start_date"])
+        end = date.fromisoformat(params["end_date"])
+        times = pd.date_range(
+            start,
+            f"{end.isoformat()} 23:00",
+            freq="h",
+        )
         response = requests.Response()
         response.status_code = self.status_code
+        response._content = b"service unavailable" if self.status_code != 200 else b""
+        if self.status_code != 200:
+            return response
         response._content = json.dumps(
             {
                 "hourly": {
@@ -95,12 +101,44 @@ def test_force_refresh_re_fetches_all_cities(tmp_path: Path) -> None:
     assert len(session.calls) == len(CITIES) * 2
 
 
+def test_2026_request_chunk_ends_on_requested_date(tmp_path: Path) -> None:
+    session = FakeSession()
+    requested_end = "2026-03-15"
+
+    fetch_weather(
+        "2026-03-10",
+        requested_end,
+        cache_dir=tmp_path,
+        session=session,
+    )
+
+    assert len(session.calls) == len(CITIES)
+    assert all(params["end_date"] == requested_end for _, params in session.calls)
+
+
+def test_partial_year_cache_is_not_reused_for_later_requested_end_date(
+    tmp_path: Path,
+) -> None:
+    session = FakeSession()
+
+    fetch_weather("2026-02-01", "2026-02-02", tmp_path, session)
+    assert len(session.calls) == len(CITIES)
+
+    fetch_weather("2026-02-01", "2026-02-03", tmp_path, session)
+
+    assert len(session.calls) == len(CITIES) * 2
+    assert all(params["end_date"] == "2026-02-03" for _, params in session.calls[-4:])
+
+
 def test_non_200_response_raises_and_does_not_return_partial_data(
     tmp_path: Path,
 ) -> None:
     session = FakeSession(status_code=503)
 
-    with pytest.raises(requests.HTTPError, match="HTTP 503"):
+    with pytest.raises(
+        requests.HTTPError,
+        match="HTTP 503.*Response body: service unavailable",
+    ):
         fetch_weather(
             "2024-01-01",
             "2024-01-01",
@@ -109,3 +147,28 @@ def test_non_200_response_raises_and_does_not_return_partial_data(
         )
 
     assert len(session.calls) == 1
+
+
+def test_missing_temperatures_report_first_and_last_timestamp(
+    tmp_path: Path,
+) -> None:
+    class MissingTemperatureSession(FakeSession):
+        def get(self, url: str, **kwargs: object) -> requests.Response:
+            response = super().get(url, **kwargs)
+            if response.status_code == 200:
+                payload = response.json()
+                payload["hourly"]["temperature_2m"][0] = None
+                payload["hourly"]["temperature_2m"][-1] = None
+                response._content = json.dumps(payload).encode("utf-8")
+            return response
+
+    with pytest.raises(
+        ValueError,
+        match="2026-02-01 00:00:00\\+02:00 through 2026-02-01 23:00:00\\+02:00",
+    ):
+        fetch_weather(
+            "2026-02-01",
+            "2026-02-01",
+            cache_dir=tmp_path,
+            session=MissingTemperatureSession(),
+        )

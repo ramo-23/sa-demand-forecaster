@@ -53,6 +53,8 @@ def test_fit_and_predict_quantile_models_on_synthetic_data(monkeypatch) -> None:
     assert predictions.columns.tolist() == list(INTERVAL_COLUMNS)
     assert len(models) == 5
     assert len(predictions) == 48
+    assert models[0.1].get_params()["alpha"] == 0.1
+    assert models[0.975].get_params()["alpha"] == 0.975
     assert (
         predictions["lower_95"]
         .le(predictions["lower_80"])
@@ -61,6 +63,7 @@ def test_fit_and_predict_quantile_models_on_synthetic_data(monkeypatch) -> None:
     assert predictions["lower_80"].le(predictions["median"]).all()
     assert predictions["median"].le(predictions["upper_80"]).all()
     assert predictions["upper_80"].le(predictions["upper_95"]).all()
+    assert predictions["upper_95"].mean() > predictions["lower_95"].mean()
 
 
 def test_predict_preserves_input_and_index(monkeypatch) -> None:
